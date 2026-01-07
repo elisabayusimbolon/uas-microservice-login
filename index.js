@@ -1,63 +1,77 @@
 const express = require('express');
-const mongoose = require('mongoose');
+const { MongoClient } = require('mongodb');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken'); // Ini library buat bikin Token
+const jwt = require('jsonwebtoken');
 const cors = require('cors');
-require('dotenv').config();
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// --- KONEKSI DATABASE ---
-// Kita akan pakai database yang SAMA dengan Register
-const connectDB = async () => {
-    if (mongoose.connections[0].readyState) return;
-    // Nanti link-nya kita ambil dari Vercel
-    await mongoose.connect(process.env.MONGODB_URI);
-};
+// ENVIRONMENT VARIABLES
+const MONGODB_URI = process.env.MONGODB_URI;
+const DB_NAME = 'kependudukan_db';
+const SECRET_KEY = process.env.SECRET_KEY || 'rahasia_negara_top_secret'; // Kunci JWT
 
-// --- MODEL USER ---
-// Struktur harus sama persis dengan Register
-const UserSchema = new mongoose.Schema({
-    email: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
-});
-const User = mongoose.models.User || mongoose.model('User', UserSchema);
+if (!MONGODB_URI) console.error("⚠️ MONGODB_URI belum di-set!");
 
-// --- ENDPOINT LOGIN ---
+app.get('/', (req, res) => res.send('Microservice Login: ONLINE'));
+
 app.post('/api/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ error: "Email dan Password wajib diisi!" });
+    }
+
+    let client;
     try {
-        await connectDB();
-        const { email, password } = req.body;
+        client = new MongoClient(MONGODB_URI);
+        await client.connect();
+        const db = client.db(DB_NAME);
+        const users = db.collection('users');
 
-        // 1. Cek User
-        const user = await User.findOne({ email });
-        if (!user) return res.status(404).json({ error: "Email tidak ditemukan" });
+        // 1. Cari User berdasarkan Email
+        const user = await users.findOne({ email: email });
 
-        // 2. Cek Password
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(400).json({ error: "Password salah" });
+        // Jika user tidak ditemukan
+        if (!user) {
+            return res.status(401).json({ error: "Email tidak terdaftar!" });
+        }
 
-        // 3. Buat Token (Karcis Masuk)
+        // 2. Cek Password (Bandingkan Input vs Hash Database)
+        // Ini bagian penting yang sebelumnya mungkin belum ada
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+
+        if (!isPasswordValid) {
+            return res.status(401).json({ error: "Password salah!" });
+        }
+
+        // 3. Login Sukses -> Buat Token KTP Digital (JWT)
         const token = jwt.sign(
-            { id: user._id, email: user.email }, 
-            process.env.JWT_SECRET, // Kunci rahasia stempel
-            { expiresIn: '1h' }
+            { 
+                id: user._id, 
+                email: user.email, 
+                nama: user.nama 
+            }, 
+            SECRET_KEY, 
+            { expiresIn: '1h' } // Token berlaku 1 jam
         );
 
-        res.json({ message: "Login Berhasil!", token });
+        res.json({ 
+            message: "Login Berhasil!", 
+            token: token 
+        });
 
-    } catch (err) {
-        res.status(500).json({ error: "Server Error" });
+    } catch (error) {
+        console.error("Login Error:", error);
+        res.status(500).json({ error: "Terjadi kesalahan server login" });
+    } finally {
+        if (client) client.close();
     }
 });
 
-app.get('/', (req, res) => res.send('Service Login Ready'));
+const PORT = process.env.PORT || 3002;
+app.listen(PORT, () => console.log(`Server Login jalan di port ${PORT}`));
 
 module.exports = app;
-
-// Kode agar bisa jalan di local & Vercel
-if (require.main === module) {
-    app.listen(3001, () => console.log('Login running on 3001'));
-}
