@@ -1,3 +1,6 @@
+// FILE: uas-microservice-login/index.js
+// FUNCTION: AUTH SERVICE (Register + Login)
+
 const express = require('express');
 const { MongoClient } = require('mongodb');
 const bcrypt = require('bcryptjs');
@@ -8,70 +11,75 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ENVIRONMENT VARIABLES
+// --- KONFIGURASI DATABASE KHUSUS AUTH ---
 const MONGODB_URI = process.env.MONGODB_URI;
-const DB_NAME = 'kependudukan_db';
-const SECRET_KEY = process.env.SECRET_KEY || 'rahasia_negara_top_secret'; // Kunci JWT
+const DB_NAME = 'microservice_auth'; // Database 1
+const SECRET_KEY = process.env.SECRET_KEY || 'kunci_rahasia_negara';
 
-if (!MONGODB_URI) console.error("⚠️ MONGODB_URI belum di-set!");
+if (!MONGODB_URI) console.error("⚠️ MONGODB_URI belum di-set di Vercel!");
 
-app.get('/', (req, res) => res.send('Microservice Login: ONLINE'));
-
-app.post('/api/login', async (req, res) => {
+// --- 1. REGISTER USER BARU ---
+app.post('/api/auth/register', async (req, res) => {
     const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: "Email & Password wajib diisi!" });
 
-    if (!email || !password) {
-        return res.status(400).json({ error: "Email dan Password wajib diisi!" });
-    }
-
-    let client;
+    let client = new MongoClient(MONGODB_URI);
     try {
-        client = new MongoClient(MONGODB_URI);
         await client.connect();
         const db = client.db(DB_NAME);
-        const users = db.collection('users');
+        
+        // Cek apakah email sudah ada
+        const exist = await db.collection('users').findOne({ email });
+        if (exist) return res.status(400).json({ error: "Email ini sudah terdaftar!" });
 
-        // 1. Cari User berdasarkan Email
-        const user = await users.findOne({ email: email });
-
-        // Jika user tidak ditemukan
-        if (!user) {
-            return res.status(401).json({ error: "Email tidak terdaftar!" });
-        }
-
-        // 2. Cek Password (Bandingkan Input vs Hash Database)
-        // Ini bagian penting yang sebelumnya mungkin belum ada
-        const isPasswordValid = await bcrypt.compare(password, user.password);
-
-        if (!isPasswordValid) {
-            return res.status(401).json({ error: "Password salah!" });
-        }
-
-        // 3. Login Sukses -> Buat Token KTP Digital (JWT)
-        const token = jwt.sign(
-            { 
-                id: user._id, 
-                email: user.email, 
-                nama: user.nama 
-            }, 
-            SECRET_KEY, 
-            { expiresIn: '1h' } // Token berlaku 1 jam
-        );
-
-        res.json({ 
-            message: "Login Berhasil!", 
-            token: token 
+        // Enkripsi Password
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        // Simpan ke Database
+        await db.collection('users').insertOne({
+            email,
+            password: hashedPassword,
+            createdAt: new Date()
         });
 
-    } catch (error) {
-        console.error("Login Error:", error);
-        res.status(500).json({ error: "Terjadi kesalahan server login" });
+        res.status(201).json({ message: "Registrasi Berhasil! Silakan Login." });
+    } catch (e) {
+        res.status(500).json({ error: "Server Error: " + e.message });
     } finally {
-        if (client) client.close();
+        client.close();
     }
 });
 
-const PORT = process.env.PORT || 3002;
-app.listen(PORT, () => console.log(`Server Login jalan di port ${PORT}`));
+// --- 2. LOGIN USER ---
+app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body;
+    let client = new MongoClient(MONGODB_URI);
+    try {
+        await client.connect();
+        const db = client.db(DB_NAME);
 
+        // Cari user
+        const user = await db.collection('users').findOne({ email });
+        if (!user) return res.status(401).json({ error: "Email tidak ditemukan!" });
+
+        // Cek password
+        const validPass = await bcrypt.compare(password, user.password);
+        if (!validPass) return res.status(401).json({ error: "Password salah!" });
+
+        // Buat Token (KTP Sementara)
+        const token = jwt.sign({ id: user._id, email: user.email }, SECRET_KEY, { expiresIn: '2h' });
+        
+        res.json({ message: "Login Sukses", token });
+    } catch (e) {
+        res.status(500).json({ error: "Server Error" });
+    } finally {
+        client.close();
+    }
+});
+
+// Default Route
+app.get('/', (req, res) => res.send("AUTH SERVICE IS RUNNING..."));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Auth Service running on port ${PORT}`));
 module.exports = app;
